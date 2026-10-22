@@ -1,0 +1,275 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+# ------------------------------
+# BANNER
+# ------------------------------
+show_banner() {
+    clear 2>/dev/null
+    gum style \
+        --border double \
+        --border-foreground 39 \
+        --padding "1 3" \
+        --align center \
+        --width 50 \
+        --margin "1 2" \
+        "$(gum style --foreground 39 --bold 'apkzhi') $(gum style --foreground 241 "v${VERSION}")" \
+        "$(gum style --italic --foreground 241 'Generate & Build Android APKs')"
+}
+
+# ------------------------------
+# BUILD COMMANDS
+# ------------------------------
+ensure_gradlew() {
+    if [ -f "gradlew" ] && [ ! -x "gradlew" ]; then
+        chmod +x gradlew
+    fi
+}
+
+build_apk() {
+    local build_type="$1"
+    echo
+    step "Building APK (${build_type})..."
+    ensure_gradlew
+
+    if [ ! -f "gradlew" ]; then
+        error "No gradlew found. Are you in an Android project directory?"
+    fi
+
+    echo
+    if [ "$build_type" = "release" ]; then
+        ./gradlew assembleRelease --no-daemon
+    else
+        ./gradlew assembleDebug --no-daemon
+    fi
+
+    local apk_path
+    if [ "$build_type" = "release" ]; then
+        apk_path=$(find app/build/outputs/apk/release -name "*.apk" 2>/dev/null | head -1)
+    else
+        apk_path=$(find app/build/outputs/apk/debug -name "*.apk" 2>/dev/null | head -1)
+    fi
+
+    echo
+    if [ -n "$apk_path" ]; then
+        success "Build complete!"
+        echo -e "  ${BOLD}APK:${RESET} ${WHITE}$(pwd)/$apk_path${RESET}"
+        if [ "$build_type" = "release" ]; then
+            echo -e "  ${YELLOW}Warning: Release APK is unsigned. Use apksigner or jarsigner to sign it.${RESET}"
+        fi
+    else
+        error "Build output not found"
+    fi
+    echo
+}
+
+build_flutter() {
+    local build_type="$1"
+    echo
+
+    if [ ! -f "pubspec.yaml" ]; then
+        error "No pubspec.yaml found. Are you in a Flutter project directory?"
+    fi
+
+    if [ "$build_type" = "release" ]; then
+        error "Release builds are not supported on Termux. Use 'apkzhi build flutter' for debug builds."
+    fi
+
+    step "Building Flutter APK (debug)..."
+    flutter build apk --debug --split-per-abi
+
+    local apk_path
+    apk_path=$(find build/app/outputs -name "*.apk" 2>/dev/null | head -1)
+
+    echo
+    if [ -n "$apk_path" ]; then
+        success "Build complete!"
+        echo -e "  ${BOLD}APK:${RESET} ${WHITE}$(pwd)/$apk_path${RESET}"
+    else
+        error "Build output not found"
+    fi
+    echo
+}
+
+clean_project() {
+    echo
+    if [ -f "pubspec.yaml" ] && [ -f "lib/main.dart" ]; then
+        step "Detected Flutter project"
+        flutter clean
+        success "Flutter project cleaned"
+    elif [ -f "gradlew" ]; then
+        step "Detected Gradle project"
+        ensure_gradlew
+        ./gradlew clean --no-daemon
+        success "Gradle project cleaned"
+    else
+        error "No supported project found. Run this from a project root directory."
+    fi
+    echo
+}
+
+# ------------------------------
+# HELP
+# ------------------------------
+show_help() {
+    show_banner
+    echo
+    echo -e "${BOLD}USAGE${RESET}"
+    echo -e "  ${WHITE}apkzhi${RESET} ${GREEN}<command>${RESET} ${YELLOW}[options]${RESET}"
+    echo
+    echo -e "${BOLD}COMMANDS${RESET}"
+    echo -e "  ${GREEN}create${RESET} ${YELLOW}<dir>${RESET}                     Create a new Java project (default)"
+    echo -e "  ${GREEN}create${RESET} ${YELLOW}<dir> --kotlin${RESET}            Create a new Kotlin project"
+    echo -e "  ${GREEN}create${RESET} ${YELLOW}<dir> --flutter${RESET}           Create a new Flutter project"
+    echo -e "  ${GREEN}create${RESET} ${YELLOW}<dir> --nativec${RESET}           Create a new Native C project"
+    echo -e "  ${GREEN}create${RESET} ${YELLOW}<dir> --nativecpp${RESET}         Create a new Native C++ project"
+    echo
+    echo -e "  ${GREEN}build debug${RESET}               Build debug APK (Gradle)"
+    echo -e "  ${GREEN}build release${RESET}             Build release APK (Gradle, unsigned)"
+    echo -e "  ${GREEN}build flutter${RESET}             Build debug APK (Flutter)"
+    echo
+    echo -e "  ${GREEN}clean${RESET}                     Clean build artifacts"
+    echo -e "  ${GREEN}help${RESET}                      Show this help message"
+    echo
+    echo -e "${BOLD}EXAMPLES${RESET}"
+    echo -e "  ${DIM}# Create and build a Java app${RESET}"
+    echo -e "  ${WHITE}apkzhi create myapp${RESET}"
+    echo -e "  ${WHITE}cd myapp && apkzhi build debug${RESET}"
+    echo
+    echo -e "  ${DIM}# Create a Kotlin app${RESET}"
+    echo -e "  ${WHITE}apkzhi create myapp --kotlin${RESET}"
+    echo
+    echo -e "  ${DIM}# Create a Flutter app${RESET}"
+    echo -e "  ${WHITE}apkzhi create myapp --flutter${RESET}"
+    echo
+}
+
+# ------------------------------
+# INTERACTIVE MENU
+# ------------------------------
+interactive_menu() {
+    mkdir -p "$PROJECT_ROOT" || error "Cannot create project root: $PROJECT_ROOT"
+    while true; do
+        clear 2>/dev/null
+        gum style --border double --border-foreground 39 --padding "1 3" --align center --width 52 \
+          "$(gum style --foreground 39 --bold 'apkzhi') $(gum style --foreground 241 "v${VERSION}")" \
+          "$(gum style --italic --foreground 241 'Custom Android APK Builder')"
+        echo
+        echo -e "  ${CYAN}Project directory:${RESET} $PROJECT_ROOT"
+        echo
+        choice=$(gum choose --header "MAIN MENU" \
+          "Create Java project" "Create Kotlin project" "Create Flutter project" \
+          "Create Native C project" "Create Native C++ project" \
+          "Build APK from project" "List projects" "Exit") || choice="Exit"
+        case "$choice" in
+          "Create Java project"|"Create Kotlin project"|"Create Flutter project"|"Create Native C project"|"Create Native C++ project")
+            case "$choice" in
+              "Create Java project") kind="" ;;
+              "Create Kotlin project") kind="--kotlin" ;;
+              "Create Flutter project") kind="--flutter" ;;
+              "Create Native C project") kind="--nativec" ;;
+              "Create Native C++ project") kind="--nativecpp" ;;
+            esac
+            name=$(gum input --header "Project folder name" --placeholder "MyApp") || continue
+            [ -n "$name" ] || { gum style --foreground 196 "Project name cannot be empty"; sleep 1; continue; }
+            case "$name" in *..*|*/*|*\\*) gum style --foreground 196 "Use a simple folder name (no / or ..)"; sleep 2; continue;; esac
+            target="$PROJECT_ROOT/$name"
+            if [ -e "$target" ]; then gum style --foreground 196 "Already exists: $target"; read -r -p "Press Enter to continue..." _; continue; fi
+            "$SCRIPT_DIR/apkzhi" create "$target" $kind
+            echo
+            read -r -p "Project path: $target | Press Enter to return to menu..." _
+            ;;
+          "Build APK from project")
+            mapfile -t projects < <(find "$PROJECT_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+            if [ ${#projects[@]} -eq 0 ]; then gum style --foreground 196 "No projects found in $PROJECT_ROOT"; read -r -p "Press Enter..." _; continue; fi
+            selected=$(printf '%s\n' "${projects[@]}" | gum choose --header "Choose project to build") || continue
+            [ -n "$selected" ] || continue
+            if [ -f "$selected/pubspec.yaml" ]; then (cd "$selected" && flutter build apk --debug)
+            elif [ -f "$selected/gradlew" ]; then (cd "$selected" && chmod +x gradlew && ./gradlew assembleDebug --no-daemon)
+            else gum style --foreground 196 "No Gradle wrapper found. Cannot build this project yet."; fi
+            echo
+            read -r -p "Build finished. Press Enter to return to menu..." _
+            ;;
+          "List projects")
+            echo
+            find "$PROJECT_ROOT" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null
+            echo
+            read -r -p "Press Enter to return to menu..." _
+            ;;
+          "Exit") return 0 ;;
+        esac
+    done
+}
+
+# ------------------------------
+# MAIN DISPATCHER
+# ------------------------------
+if [ $# -eq 0 ]; then
+    interactive_menu
+    exit 0
+fi
+
+case "$1" in
+    create)
+        shift
+        template_type="java"
+        app_dir=""
+
+        for arg in "$@"; do
+            case "$arg" in
+                --kotlin)     template_type="kotlin" ;;
+                --flutter)    template_type="flutter" ;;
+                --nativec)    template_type="nativec" ;;
+                --nativecpp)  template_type="nativecpp" ;;
+                -*)           error "Unknown option: $arg" ;;
+                *)            app_dir="$arg" ;;
+            esac
+        done
+
+        if [ -z "$app_dir" ]; then
+            error "Usage: apkzhi create <dir> [--kotlin|--flutter|--nativec|--nativecpp]"
+        fi
+
+        mkdir -p "$PROJECT_ROOT" || error "Cannot create project root: $PROJECT_ROOT"
+        case "$app_dir" in
+            /*) ;;
+            *) app_dir="$PROJECT_ROOT/$app_dir" ;;
+        esac
+
+        if [ -d "$app_dir" ]; then
+            error "Directory '$app_dir' already exists"
+        fi
+
+        case "$template_type" in
+            java)      source "$SCRIPT_DIR/lib/create_java.sh"; create_java "$app_dir" ;;
+            kotlin)    source "$SCRIPT_DIR/lib/create_kotlin.sh"; create_kotlin "$app_dir" ;;
+            flutter)   source "$SCRIPT_DIR/lib/create_flutter.sh"; create_flutter "$app_dir" ;;
+            nativec)   source "$SCRIPT_DIR/lib/create_nativec.sh"; create_nativec "$app_dir" ;;
+            nativecpp) source "$SCRIPT_DIR/lib/create_nativecpp.sh"; create_nativecpp "$app_dir" ;;
+        esac
+        ;;
+    build)
+        case "$2" in
+            debug|release)
+                build_apk "$2"
+                ;;
+            flutter)
+                build_flutter "$3"
+                ;;
+            *)
+                error "Usage: apkzhi build [debug|release|flutter]"
+                ;;
+        esac
+        ;;
+    clean)
+        clean_project
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        error "Unknown command: $1. Run 'apkzhi help' for usage."
+        ;;
+esac
